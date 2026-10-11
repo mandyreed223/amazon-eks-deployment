@@ -1,93 +1,92 @@
-# ☸️ Amazon EKS Deployment
+# ☁️ Amazon EKS Deployment
 
-A hands-on Amazon EKS project focused on deploying, exposing, scaling, monitoring, updating, and troubleshooting a containerized application running on Kubernetes in AWS.
+A hands-on Amazon EKS project focused on deploying, exposing, scaling, monitoring, updating, troubleshooting, and cleaning up a containerized application running on Kubernetes in AWS.
 
-Rather than stopping once the workload was running, I used this project to follow the full path from application source code to Docker, Amazon ECR, Kubernetes, AWS load balancing, autoscaling, and CloudWatch visibility.
+This project builds on my previous local Kubernetes labs by moving the workload into a managed AWS environment and exploring how Kubernetes concepts connect to real cloud infrastructure.
 
-![Amazon EKS Deployment Architecture](screenshots/00-eks-architecture.png)
-
-## 🎯 Project Goals
-
-The goal of this project was to move beyond basic Kubernetes deployment and explore how Kubernetes operates when running on AWS.
-
-I wanted to practice:
-
-- Creating an Amazon EKS cluster with managed EC2 worker nodes
-- Deploying and exposing a Kubernetes application
-- Building and versioning a custom Docker image
-- Storing container images in Amazon ECR
-- Performing Kubernetes rolling updates
-- Testing Kubernetes self-healing
-- Scaling application Pods manually
-- Configuring Horizontal Pod Autoscaling
-- Generating load and observing automatic scale-up and scale-down
-- Monitoring resource utilization
-- Sending EKS control-plane logs to Amazon CloudWatch
-- Understanding the difference between Pod scaling and node scaling
+---
 
 ## 🏗️ Architecture
 
-Application traffic followed this path:
+![Amazon EKS Deployment Architecture](screenshots/00-eks-architecture.png)
 
-```text
-Internet
-   ↓
-AWS Load Balancer
-   ↓
-Kubernetes LoadBalancer Service
-   ↓
-EKS Deployment
-   ↓
-ReplicaSet
-   ↓
-Application Pods
-   ↓
-EC2 Managed Worker Nodes
-```
+The application runs on Amazon EKS using a managed EC2 node group distributed across two Availability Zones. Traffic enters through AWS load-balancing infrastructure and a Kubernetes `LoadBalancer` Service before reaching the application pods.
 
-The EKS environment used two Availability Zones with managed EC2 worker nodes configured for private networking.
+Container images are stored in Amazon ECR, the Horizontal Pod Autoscaler manages pod scaling based on CPU utilization, and EKS API and audit logs are sent to Amazon CloudWatch.
 
-Application releases followed a separate path:
+---
 
-```text
-HTML / CSS
-    ↓
-Docker Build
-    ↓
-Versioned Container Image
-    ↓
-Amazon ECR
-    ↓
-EKS Deployment Update
-    ↓
-New ReplicaSet
-    ↓
-Rolling Update
-    ↓
-Updated Application Pods
-```
+## 🎯 Project Goals
 
-## 🧰 Technologies Used
+The goal of this project was not simply to get an application running on EKS.
+
+I wanted to understand the full path:
+
+**Source Code → Docker Image → Amazon ECR → EKS Deployment → ReplicaSet → Pods → Kubernetes Service → AWS Load Balancer → User**
+
+I also wanted to practice what happens after deployment:
+
+- How Kubernetes responds when a pod fails
+- How workloads scale across worker nodes
+- How CPU-based Horizontal Pod Autoscaling behaves
+- How a new application version rolls out
+- How EKS integrates with CloudWatch
+- How AWS resources map back to Kubernetes objects
+- How to verify cloud resources are actually removed during cleanup
+
+---
+
+## 🛠️ Technologies Used
+
+### AWS
 
 - Amazon EKS
 - Amazon EC2
 - Amazon ECR
 - Amazon VPC
-- Elastic Load Balancing
+- AWS Load Balancing
 - Amazon CloudWatch
-- Kubernetes
-- Docker
-- nginx
-- eksctl
-- kubectl
+- AWS IAM
 - AWS CLI
-- Linux / WSL
+
+### Kubernetes
+
+- Deployments
+- ReplicaSets
+- Pods
+- Services
+- Horizontal Pod Autoscaler
+- Metrics Server
+- Resource requests and limits
+- Rolling updates
+
+### DevOps / Tooling
+
+- Docker
+- kubectl
+- eksctl
 - Git
 - GitHub
+- Linux / WSL
+- Visual Studio Code
 
-## ☁️ Building the EKS Cluster
+---
 
-The EKS cluster was created with `eksctl` using a managed node group distributed across two Availability Zones.
+## ☸️ Building the EKS Cluster
+
+I defined the EKS environment using an `eksctl` configuration file rather than manually building the cluster through the AWS console.
+
+The cluster used:
+
+- Kubernetes 1.36
+- Region `us-east-1`
+- Availability Zones `us-east-1a` and `us-east-1b`
+- Managed EC2 worker nodes
+- `t3.medium` instances
+- Private worker networking
+- Minimum node capacity: 2
+- Desired node capacity: 2
+- Maximum node capacity: 3
 
 ```yaml
 managedNodeGroups:
@@ -99,22 +98,22 @@ managedNodeGroups:
     privateNetworking: true
 ```
 
-The configuration created two `t3.medium` EC2 worker nodes with the ability for the managed node group to scale to three nodes.
+The minimum, desired, and maximum values define the managed node group's capacity settings. This project did **not** configure Kubernetes Cluster Autoscaler or Karpenter, so node-level workload-driven autoscaling was not part of the lab.
 
-The worker nodes used private networking while Kubernetes workloads were managed through the Amazon EKS control plane.
+That distinction became especially useful later when working with the Horizontal Pod Autoscaler, which scales **pods**, not EC2 worker nodes.
 
-![EKS worker nodes](screenshots/01-eks-worker-nodes-ready.png)
+---
 
 ## 🚀 Deploying the Application
 
-The application was deployed using a Kubernetes `Deployment` with three initial replicas.
+The initial Kubernetes Deployment created three nginx application pods.
 
 ```yaml
 spec:
   replicas: 3
 ```
 
-CPU and memory requests and limits were also configured for the container:
+I also configured resource requests and limits:
 
 ```yaml
 resources:
@@ -126,58 +125,47 @@ resources:
     memory: "128Mi"
 ```
 
-These values provided resource boundaries for the workload and later became important when configuring Horizontal Pod Autoscaling.
+Resource requests tell Kubernetes how much CPU and memory a pod needs for scheduling, while limits define the maximum resources the container can consume.
 
-![Initial deployment](screenshots/02-initial-deployment-and-pods.png)
+After deployment, I verified the relationship between:
 
-## 🔄 Deployment, ReplicaSets, and Pods
+**Deployment → ReplicaSet → Pods**
 
-One of the goals of the project was to understand the relationship between the Kubernetes objects managing the application.
+This made the Kubernetes controller hierarchy much easier to see in a real environment.
 
-```text
-Deployment
-    ↓
-ReplicaSet
-    ↓
-Pods
-```
+![Initial EKS deployment](screenshots/02-initial-deployment-and-pods.png)
 
-The Deployment defines the desired application state.
+---
 
-A ReplicaSet maintains the requested number of Pods.
+## 🌐 Exposing the Application
 
-When the Deployment's Pod template changes, Kubernetes creates a new ReplicaSet and performs a rolling update instead of replacing every running Pod at once.
-
-![Deployment and ReplicaSets](screenshots/03-deployment-replicasets-and-pods.png)
-
-## 🌎 Exposing the Application
-
-The application was exposed using a Kubernetes Service with type `LoadBalancer`.
+The application was exposed using a Kubernetes Service with:
 
 ```yaml
-spec:
-  type: LoadBalancer
+type: LoadBalancer
 ```
 
-AWS provisioned external load-balancing infrastructure for the Service, providing a public endpoint for the application.
-
-This also demonstrated an important Kubernetes abstraction:
+This connected a Kubernetes networking object to AWS load-balancing infrastructure and provided an externally reachable endpoint for the application.
 
 ```text
-External Endpoint
-       ↓
-Kubernetes Service
-       ↓
-Available Pods
+Browser
+   ↓
+AWS Load Balancer
+   ↓
+Kubernetes LoadBalancer Service
+   ↓
+Application Pods
 ```
 
-The Service remained stable while the Pods behind it were deleted, recreated, scaled, and replaced during rolling updates.
+This was one of the most useful parts of the project because it connected Kubernetes networking concepts directly to AWS infrastructure.
+
+---
 
 ## 🐳 Building a Custom Docker Image
 
-The initial Kubernetes deployment used the standard nginx image.
+After validating the initial nginx deployment, I replaced the default nginx page with my own application.
 
-I then created a custom HTML/CSS application and packaged it into my own nginx-based container image.
+The Dockerfile remained intentionally simple:
 
 ```dockerfile
 FROM nginx:1.27-alpine
@@ -187,258 +175,313 @@ COPY index.html /usr/share/nginx/html/index.html
 EXPOSE 80
 ```
 
-The image was built locally and versioned rather than repeatedly overwriting the same image tag.
+The application was built locally as a Docker image and then prepared for deployment through Amazon ECR.
 
-```text
-Application Source
-       ↓
-Docker Build
-       ↓
-mandy-eks-demo:v1
-       ↓
-Amazon ECR
-```
+---
 
 ## 📦 Amazon ECR
 
-A private Amazon ECR repository was created to store the application's container images.
+Instead of relying only on a public container image, I created a private Amazon ECR repository for the application.
 
-The local Docker image was tagged with its ECR repository URI and pushed to AWS.
+The workflow became:
 
-The EKS Deployment could then pull the private image from ECR using the AWS permissions associated with the worker infrastructure.
+```text
+Application Source
+      ↓
+Docker Build
+      ↓
+Local Docker Image
+      ↓
+Amazon ECR
+      ↓
+Amazon EKS
+```
 
-This connected the local container-development workflow to the Kubernetes deployment running in AWS.
+This gave me hands-on experience with a more realistic container release workflow and demonstrated how Kubernetes retrieves application images from an AWS container registry.
+
+---
 
 ## 🩹 Testing Kubernetes Self-Healing
 
-To test Kubernetes desired-state reconciliation, I deliberately deleted one of the running application Pods.
+One of my favorite tests was intentionally deleting a running application pod.
 
-Instead of manually recreating it, the ReplicaSet detected that the actual state no longer matched the desired state and immediately created a replacement.
+Kubernetes immediately detected that the actual state no longer matched the desired state defined by the Deployment.
 
-The public application remained available during the test.
+The ReplicaSet created a replacement pod automatically.
 
-This reinforced one of the most important Kubernetes concepts I practiced in the project:
+The application remained available while Kubernetes repaired the workload.
 
-> Pods are disposable. Controllers maintain desired state.
+This was a practical demonstration of one of Kubernetes' most important concepts:
+
+> **Desired state drives recovery.**
+
+I didn't manually recreate the failed pod. Kubernetes handled it for me.
+
+---
 
 ## 📈 Manual Pod Scaling
 
-The Deployment was manually scaled from three Pods to six.
+I next increased the application from three pods to six.
 
 ```text
-3 Pods
-   ↓
-6 Pods
+3 Pods → 6 Pods
 ```
 
-All six Pods successfully scheduled across the existing two EC2 worker nodes.
+The additional pods were distributed across the two EC2 worker nodes.
 
-![Manual pod scaling](screenshots/04-manual-pod-scaling.png)
+Importantly, the worker node count remained at two.
 
-The worker count remained at two because the existing nodes still had sufficient capacity.
-
-That demonstrated an important distinction:
+This reinforced the difference between two separate scaling layers:
 
 ```text
-Application Pod Scaling
-          ≠
+Kubernetes Pod Scaling
+        ≠
 EC2 Node Scaling
 ```
 
-Increasing the number of Pods does not automatically require additional EC2 instances when sufficient cluster capacity already exists.
+Increasing the number of application replicas does not automatically mean additional EC2 nodes are required.
 
-## 📊 Monitoring Resource Usage
+---
 
-The Kubernetes Metrics Server provided visibility into CPU and memory consumption.
+## 📊 Kubernetes Metrics
 
-I inspected both worker-node and Pod-level utilization using:
+Using Metrics Server and `kubectl top`, I inspected CPU and memory usage for both worker nodes and application pods.
 
-```bash
-kubectl top nodes
-kubectl top pods
-```
+During normal operation, utilization was very low.
 
 ![Node and pod metrics](screenshots/05-node-and-pod-metrics.png)
 
-This helped connect Kubernetes resource requests and limits with the workload's actual resource consumption.
+That gave me a baseline before testing autoscaling under artificial CPU load.
 
-## ⚡ Horizontal Pod Autoscaling
+---
 
-A Horizontal Pod Autoscaler was configured for the application with:
+## ⚙️ Horizontal Pod Autoscaling
 
-- Minimum replicas: `3`
-- Maximum replicas: `6`
-- CPU target: `50%`
+I configured a Horizontal Pod Autoscaler with:
 
-The application requested:
+- Minimum replicas: 3
+- Maximum replicas: 6
+- CPU target: 50%
 
-```yaml
-cpu: "100m"
+The HPA continuously compared current CPU utilization with the configured target.
+
+Under normal load, the application remained at three pods.
+
+I then generated CPU load against the application.
+
+CPU utilization increased to approximately 60%, exceeding the 50% target.
+
+Kubernetes responded by increasing the application from:
+
+```text
+3 Pods → 4 Pods
 ```
-
-per Pod.
-
-This is important because HPA CPU utilization is calculated relative to the Pod's requested CPU rather than the total CPU capacity of the EC2 worker node.
-
-### Generating Load
-
-Temporary BusyBox Pods generated repeated requests to the application Service from inside the cluster.
-
-As CPU utilization increased beyond the configured target, the HPA responded by increasing the number of application Pods.
-
-The Deployment scaled from three Pods to four.
 
 ![HPA scale up](screenshots/06-hpa-scale-up-under-load.png)
 
-After the load generators were removed, CPU utilization dropped.
+After removing the artificial load, CPU utilization dropped.
 
-Following the HPA stabilization period, Kubernetes reduced the Deployment back to its three-Pod baseline.
+The HPA eventually returned the Deployment to its minimum replica count:
+
+```text
+4 Pods → 3 Pods
+```
 
 ![HPA scale down](screenshots/07-hpa-scale-down-to-baseline.png)
 
-The complete behavior looked like:
+This demonstrated real workload-driven pod autoscaling rather than simply changing the replica count manually.
 
-```text
-Traffic Increases
-       ↓
-CPU Utilization Rises
-       ↓
-HPA Detects Target Exceeded
-       ↓
-Additional Pod Created
-       ↓
-Traffic Removed
-       ↓
-CPU Utilization Falls
-       ↓
-HPA Returns to Baseline
-```
+---
 
-## 🖥️ Amazon CloudWatch Visibility
+## 👀 CloudWatch Visibility
 
-EKS control-plane logging was initially disabled.
+I enabled Amazon EKS control-plane logging for:
 
-I enabled the API and audit log types to provide additional visibility into cluster activity.
+- Kubernetes API logs
+- Kubernetes audit logs
+
+The logs appeared in Amazon CloudWatch under the EKS cluster log group.
 
 ![CloudWatch logging](screenshots/08-cloudwatch-api-audit-logging.png)
 
-Amazon EKS then published API server and audit log streams to CloudWatch.
+I also verified separate API server and audit log streams.
 
 ![CloudWatch log streams](screenshots/09-cloudwatch-log-streams.png)
 
-This connected Kubernetes administration with AWS-native operational visibility and demonstrated how activity occurring at the managed control-plane layer can still be observed through CloudWatch.
+This was a useful reminder that application observability and Kubernetes control-plane observability are different layers.
 
-## 🔁 Versioned Application Release
+In this project, CloudWatch logging focused specifically on the **EKS API and audit logs**. Application log shipping to CloudWatch was not configured.
 
-After successfully deploying the first custom application image, I modified the HTML/CSS and created a second version.
+---
 
-Instead of overwriting `v1`, I built and pushed a new `v2` image.
+## 🔄 Versioned Release and Rolling Update
+
+After the first custom application image was running successfully, I created a second version.
+
+The workflow was:
 
 ```text
-Application v1
-      ↓
-Modify Source
-      ↓
+Update Source
+     ↓
 Build Docker Image :v2
-      ↓
+     ↓
 Push :v2 to Amazon ECR
-      ↓
+     ↓
 Update EKS Deployment
-      ↓
+     ↓
+Kubernetes Rolling Update
+     ↓
 New ReplicaSet
-      ↓
-Rolling Update
-      ↓
-Application v2
+     ↓
+v2 Pods Running
 ```
 
-Kubernetes created another ReplicaSet and gradually replaced the previous application Pods.
+Kubernetes gradually replaced the old application pods with the new version rather than taking the entire application offline at once.
 
-The public load-balancer endpoint did not change during the release.
+After the rollout completed:
 
-This demonstrated how the application version could change independently of the external Service used to reach it.
+- The new ReplicaSet owned the active pods
+- The old ReplicaSets scaled to zero
+- All running application pods used the `v2` image
+- The existing load-balanced endpoint continued serving the application
 
-## 🎉 Final Application
+This tied together container versioning, ECR, Kubernetes Deployments, ReplicaSets, and rolling updates in one workflow.
 
-The final `v2` application displayed several characteristics of the environment directly in the interface:
+---
 
-- `3–6` application Pods managed by HPA
-- `2` EC2 worker nodes
-- Multi-AZ AWS architecture
-- Amazon EKS running Kubernetes `1.36`
+## 🌎 Final Application
+
+The final version of the application displayed information about the environment itself, including:
+
+- HPA pod scaling range
+- EC2 worker nodes
+- Multi-AZ architecture
+- Kubernetes version
+- Request path through the AWS load balancer and Kubernetes Service
 
 ![Final EKS application](screenshots/11-final-v2-application.png)
 
+---
+
 ## 🧠 What I Learned
 
-### Kubernetes manages desired state
+This project helped connect several concepts that are easy to learn separately but much more valuable when seen together.
 
-Deleting a Pod did not require manually rebuilding it. The ReplicaSet recognized that a replica was missing and restored the desired state.
+### Kubernetes desired state is active
+
+A Deployment is not just a configuration file.
+
+Controllers continuously compare the desired state with the actual state and take action when they differ.
+
+Deleting a pod made that very clear.
 
 ### Pods and nodes are different scaling layers
 
-Scaling from three to six Pods did not increase the EC2 worker count because the existing workers had enough capacity.
+The HPA scaled application pods based on CPU utilization.
 
-The application HPA controlled Pod replicas while the EKS managed node group had its own separate capacity configuration.
+The managed EC2 node group was configured separately with minimum, desired, and maximum capacity values.
+
+Pod autoscaling does not automatically equal node autoscaling.
+
+### Kubernetes abstractions connect to real AWS infrastructure
+
+A Kubernetes `LoadBalancer` Service may look like a small YAML configuration, but in EKS it connects the Kubernetes workload to AWS networking and load-balancing resources.
+
+### Container registries are part of the deployment path
+
+Amazon ECR became the bridge between my locally built Docker image and the application running inside EKS.
+
+### Rolling updates connect CI/CD concepts to Kubernetes
+
+Although this project did not implement a complete automated CI/CD pipeline, the release process followed the same basic deployment path:
 
 ```text
-HPA:
-3 → 6 Pods
-
-Managed Node Group:
-2 → 3 EC2 Nodes
+Code Change
+   ↓
+Build
+   ↓
+Version
+   ↓
+Registry
+   ↓
+Deploy
+   ↓
+Validate
 ```
 
-### Resource requests affect more than scheduling
+Automating those steps would be a natural next stage.
 
-The CPU request provided a scheduling requirement for the container, but it also became the reference point used by HPA when calculating CPU utilization.
+### Observability has layers
 
-### Kubernetes Services provide stability
+Application health, pod metrics, node metrics, Kubernetes events, and EKS control-plane logs all answer different troubleshooting questions.
 
-Pods changed repeatedly throughout the project.
+Knowing **which layer to inspect first** is just as important as knowing the commands.
 
-They were deleted, recreated, scaled, and replaced during rolling updates.
+### Cleanup is part of cloud engineering
 
-The Service provided a consistent networking layer in front of those changing Pods.
+Creating cloud infrastructure is only half the job.
 
-### Container versioning supports safer releases
+Because EKS can create several billable AWS resources, I treated teardown and verification as part of the project rather than simply running a delete command and assuming everything disappeared.
 
-Keeping separate `v1` and `v2` images preserved the previous application version instead of overwriting it.
+---
 
-That provides a much cleaner foundation for controlled deployments and rollback strategies.
+## 🧹 Cleanup and Cost Awareness
 
-### AWS and Kubernetes operate at different layers
+After completing the lab, I removed the project resources in a controlled order:
 
-Kubernetes handled:
+```text
+Kubernetes LoadBalancer Service
+          ↓
+AWS Load Balancer
+          ↓
+HPA and Application Deployment
+          ↓
+EKS Cluster and Managed Node Group
+          ↓
+VPC / NAT Infrastructure
+          ↓
+Amazon ECR Repository
+          ↓
+CloudWatch Log Group
+```
 
-- Deployments
-- ReplicaSets
-- Pods
-- Services
-- Desired state
-- Pod autoscaling
+I then verified that the resources had actually been removed.
 
-AWS provided:
+This included checking:
 
-- Managed Kubernetes control plane
-- EC2 worker infrastructure
-- VPC networking
-- External load balancing
-- ECR container storage
-- CloudWatch visibility
+- EKS cluster deletion
+- AWS load-balancing resources
+- NAT gateway removal
+- eksctl CloudFormation stack removal
+- ECR repository deletion
+- CloudWatch log group deletion
 
-Understanding how those layers connect was one of the most valuable parts of the project.
+This final verification was important because cloud resources can continue generating costs if infrastructure is unintentionally left behind.
+
+---
 
 ## 📁 Repository Structure
 
 ```text
 amazon-eks-deployment/
+│
 ├── app/
 │   ├── Dockerfile
 │   └── index.html
+│
 ├── screenshots/
 │   ├── 00-eks-architecture.png
-│   └── ...
+│   ├── 01-eks-worker-nodes-ready.png
+│   ├── 02-initial-deployment-and-pods.png
+│   ├── 03-deployment-replicasets-and-pods.png
+│   ├── 04-manual-pod-scaling.png
+│   ├── 05-node-and-pod-metrics.png
+│   ├── 06-hpa-scale-up-under-load.png
+│   ├── 07-hpa-scale-down-to-baseline.png
+│   ├── 08-cloudwatch-api-audit-logging.png
+│   ├── 09-cloudwatch-log-streams.png
+│   └── 11-final-v2-application.png
+│
 ├── .gitignore
 ├── deployment.yaml
 ├── eks-cluster.yaml
@@ -446,54 +489,58 @@ amazon-eks-deployment/
 └── README.md
 ```
 
-## 🔐 Security Considerations
+---
 
-No AWS credentials are stored in this repository.
+## 🔐 Security and Best Practices
 
-The public Kubernetes manifest uses an ECR placeholder:
+Several practices were intentionally included in the project:
+
+- EC2 worker nodes used private networking
+- The application image was stored in a private ECR repository
+- AWS credentials were not stored in the repository
+- Sensitive local files were excluded through `.gitignore`
+- Resource requests and limits were defined for the application
+- EKS API and audit logging were enabled for additional visibility
+- AWS resources were verified during teardown
+
+The public Kubernetes manifest uses a placeholder for the ECR repository URI rather than exposing account-specific repository information:
 
 ```yaml
 image: YOUR_ECR_REPOSITORY_URI:v2
 ```
 
-This prevents an account-specific ECR URI from being embedded in the public repository.
+---
 
-The worker nodes were configured with private networking, and AWS access relied on IAM rather than credentials stored in application files.
+## 🚀 Where I Would Take This Next
 
-Resource requests and limits were also configured for the application containers.
+A production environment would introduce additional considerations beyond the scope of this lab.
 
-## 🧹 Cleanup
+Potential next steps include:
 
-Because EKS environments create billable AWS infrastructure, cleanup was treated as part of the project rather than an afterthought.
+- Terraform-managed EKS infrastructure
+- GitHub Actions CI/CD
+- Automated Docker builds and ECR pushes
+- Automated Kubernetes deployments
+- Kubernetes health probes
+- Ingress and HTTPS
+- Cluster Autoscaler or Karpenter
+- Application-level centralized logging
+- Prometheus and Grafana monitoring
+- Secrets management
+- Additional IAM hardening
 
-The cleanup process included removing:
-
-```text
-Kubernetes LoadBalancer Service
-        ↓
-External AWS Load Balancer
-        ↓
-HPA and Application Deployment
-        ↓
-EKS Cluster and Managed Node Group
-        ↓
-VPC / NAT Infrastructure
-        ↓
-ECR Repository
-        ↓
-CloudWatch Log Group
-```
-
-Resources were verified during teardown rather than assuming deletion had completed successfully.
+---
 
 ## 💚 Final Takeaway
 
-This project started as an Amazon EKS deployment, but the most valuable learning happened after the application was running.
+This project started as an EKS deployment lab and became a much broader exercise in understanding how Kubernetes operates inside AWS.
 
-I followed the workload through the complete path, built and versioned my own container images, watched Kubernetes maintain desired state, tested manual and automatic scaling, inspected real resource usage, performed rolling releases, enabled AWS-native logging, and cleaned up the cloud infrastructure afterward.
+I deployed a containerized application, exposed it externally, tested self-healing, scaled it manually, configured CPU-based autoscaling, monitored the environment, pushed versioned images through Amazon ECR, performed a rolling update, and then verified the AWS infrastructure was successfully removed.
 
-The project helped connect concepts that are often learned separately into one working system:
+More importantly, I came away with a clearer understanding of how the pieces connect:
 
-**application → container → registry → Kubernetes → AWS infrastructure → scaling → monitoring**
+**AWS infrastructure provides the platform. Kubernetes manages the desired state. Docker packages the application. ECR provides the image. Observability shows what the system is doing.**
 
-Built, scaled, broken, fixed, monitored, and probably caffeinated. ☁️☸️💚
+And when something doesn't behave the way I expect?
+
+That's usually where the best learning starts. ☁️☸️
