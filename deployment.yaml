@@ -1,0 +1,32 @@
+apiVersion: apps/v1
+kind: Deployment
+
+metadata:
+  name: eks-demo
+
+spec:
+  replicas: 3
+
+  selector:
+    matchLabels:
+      app: eks-demo
+
+  template:
+    metadata:
+      labels:
+        app: eks-demo
+        
+    spec:
+      containers:
+        - name: web
+          image: YOUR_ECR_REPOSITORY_URI:v2
+          ports:
+            - containerPort: 80
+
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "64Mi"
+            limits:
+              cpu: "250m"
+              memory: "128Mi"
